@@ -1,0 +1,18 @@
+name: 'AI Code Review'
+description: 'Automated AI code review for Pull Requests and commits using Google Gemini'
+author: 'rajvardhan'
+branding:
+  icon: 'code'
+  color: 'purple'
+
+inputs:
+  gemini_api_key:
+    description: 'Google Gemini API key'
+    required: false
+  github_token:
+    description: 'GitHub token for API access'
+    required: false
+
+runs:
+  using: 'docker'
+  image: 'Dockerfile'
