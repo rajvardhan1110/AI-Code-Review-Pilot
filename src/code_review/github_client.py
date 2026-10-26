@@ -106,13 +106,19 @@ class GitHubClient:
             return []
         return response.json()
 
-    def get_commit_files(self, commit_sha):
+    def get_commit(self, commit_sha):
         url = f"{self.base_url}/commits/{commit_sha}"
         response = requests.get(url, headers=self.headers)
         if response.status_code != 200:
             print(f"Error fetching commit: {response.status_code} {response.text}")
+            return None
+        return response.json()
+
+    def get_commit_files(self, commit_sha):
+        commit_data = self.get_commit(commit_sha)
+        if not commit_data:
             return []
-        return response.json().get("files", [])
+        return commit_data.get("files", [])
 
     def post_commit_comment(self, commit_sha, body):
         url = f"{self.base_url}/commits/{commit_sha}/comments"

@@ -1,6 +1,6 @@
 name: 'AI Code Review'
 description: 'Automated AI code review for Pull Requests and commits using Google Gemini'
-author: 'rajvardhan'
+author: 'rajvardhan1110'
 branding:
   icon: 'code'
   color: 'purple'
@@ -12,7 +12,52 @@ inputs:
   github_token:
     description: 'GitHub token for API access'
     required: false
+  image:
+    description: 'Container image to use'
+    required: false
+    default: 'ghcr.io/rajvardhan1110/ai-code-review-pilot:v1'
 
 runs:
-  using: 'docker'
-  image: 'Dockerfile'
+  using: 'composite'
+  steps:
+    - name: Run AI Code Review
+      shell: bash
+      env:
+        GEMINI_API_KEY: ${{ env.GEMINI_API_KEY || inputs.gemini_api_key }}
+        GITHUB_TOKEN: ${{ env.GITHUB_TOKEN || inputs.github_token }}
+        INPUT_IMAGE: ${{ inputs.image }}
+      run: |
+        IMAGE="${INPUT_IMAGE:-ghcr.io/rajvardhan1110/ai-code-review-pilot:v1}"
+        echo "::group::Preparing AI Code Review Container"
+        echo "Target container image: ${IMAGE}"
+
+        if docker pull "${IMAGE}"; then
+          echo "Successfully pulled prebuilt image: ${IMAGE}"
+        else
+          echo "Prebuilt image ${IMAGE} not available or accessible."
+          if [ -f "${{ github.action_path }}/Dockerfile" ]; then
+            echo "Building image locally from ${{ github.action_path }}/Dockerfile fallback..."
+            docker build -t "${IMAGE}" "${{ github.action_path }}"
+          else
+            echo "Error: Cannot pull ${IMAGE} and no Dockerfile found at ${{ github.action_path }}."
+            exit 1
+          fi
+        fi
+        echo "::endgroup::"
+
+        docker run --rm \
+          -e CI=true \
+          -e GITHUB_ACTIONS=true \
+          -e GITHUB_REPOSITORY="${GITHUB_REPOSITORY}" \
+          -e GITHUB_EVENT_NAME="${GITHUB_EVENT_NAME}" \
+          -e GITHUB_EVENT_PATH="${GITHUB_EVENT_PATH}" \
+          -e GITHUB_SHA="${GITHUB_SHA}" \
+          -e GITHUB_REF="${GITHUB_REF}" \
+          -e GITHUB_HEAD_REF="${GITHUB_HEAD_REF:-}" \
+          -e GITHUB_BASE_REF="${GITHUB_BASE_REF:-}" \
+          -e GITHUB_WORKSPACE="${GITHUB_WORKSPACE:-/github/workspace}" \
+          -e GEMINI_API_KEY="${GEMINI_API_KEY}" \
+          -e GITHUB_TOKEN="${GITHUB_TOKEN}" \
+          ${GITHUB_WORKSPACE:+-v "${GITHUB_WORKSPACE}:${GITHUB_WORKSPACE}"} \
+          ${GITHUB_EVENT_PATH:+-v "${GITHUB_EVENT_PATH}:${GITHUB_EVENT_PATH}:ro"} \
+          "${IMAGE}"

@@ -62,6 +62,10 @@ def get_review_context(env=None):
             if match:
                 pr_number = match.group(1)
 
+    pr_action = payload.get("action", "")
+
+    is_deleted = bool(payload.get("deleted", False))
+
     commit_sha = (
         env.get("COMMIT_SHA")
         or env.get("GITHUB_SHA")
@@ -69,6 +73,8 @@ def get_review_context(env=None):
         or payload.get("head_commit", {}).get("id")
         or ""
     )
+    if is_deleted or commit_sha == "0000000000000000000000000000000000000000":
+        commit_sha = ""
 
     base_ref = env.get("BASE_REF", "")
     if not base_ref:
@@ -94,6 +100,7 @@ def get_review_context(env=None):
         "repo_full_name": repo_full_name,
         "event_name": event_name,
         "pr_number": pr_number,
+        "pr_action": pr_action,
         "base_ref": base_ref,
         "head_ref": head_ref,
         "commit_sha": commit_sha,
@@ -107,6 +114,7 @@ def main():
     repo_full_name = ctx["repo_full_name"]
     event_name = ctx["event_name"]
     pr_number = ctx["pr_number"]
+    pr_action = ctx.get("pr_action", "")
     base_ref = ctx["base_ref"]
     head_ref = ctx["head_ref"]
     commit_sha = ctx["commit_sha"]
@@ -116,17 +124,50 @@ def main():
         print("Required: GEMINI_API_KEY, GITHUB_TOKEN, REPO_FULL_NAME")
         sys.exit(1)
 
+    # Determine event type
+    is_pr_event = event_name in ("pull_request", "pull_request_target")
+    is_push_event = event_name == "push"
+
+    if not is_pr_event and not is_push_event:
+        # Check if manual PR or commit review was requested (e.g. CLI or workflow_dispatch)
+        if pr_number:
+            is_pr_event = True
+        elif commit_sha:
+            is_push_event = True
+        else:
+            print(
+                f"Unsupported event type: '{event_name}'. "
+                "AI Code Review only runs on 'pull_request' and 'push' events."
+            )
+            return
+
     github = GitHubClient(github_token, repo_full_name)
     gemini = GeminiService(gemini_api_key)
 
-    is_pr = (
-        event_name in ("pull_request", "pull_request_target")
-        or bool(pr_number and event_name != "push")
-    ) and bool(pr_number)
-    if is_pr:
-        pr_number = int(pr_number)
-        run_pr_review(github, gemini, pr_number)
+    if is_pr_event:
+        # Only review on relevant PR actions (opened, synchronize, reopened)
+        if pr_action and pr_action not in ("opened", "synchronize", "reopened"):
+            print(
+                f"Skipping pull_request event with action '{pr_action}'. "
+                "Supported actions: opened, synchronize, reopened."
+            )
+            return
+
+        if not pr_number:
+            print("Error: Pull request event detected, but could not determine PR number.")
+            return
+
+        try:
+            pr_num = int(pr_number)
+        except ValueError:
+            print(f"Error: Invalid pull request number: {pr_number}")
+            return
+
+        run_pr_review(github, gemini, pr_num)
     else:
+        if not commit_sha:
+            print("No valid commit SHA found for push review - skipping review.")
+            return
         run_push_review(github, gemini, base_ref, head_ref, commit_sha)
 
 
@@ -194,14 +235,25 @@ def run_pr_review(github, gemini, pr_number):
 
 
 def run_push_review(github, gemini, base_ref, head_ref, commit_sha):
-    print(f"Reviewing push commit {commit_sha[:8]} in {github.repo}")
-
-    if not base_ref or base_ref == "0000000000000000000000000000000000000000":
-        print("Initial commit or no base ref - skipping review.")
+    if not commit_sha:
+        print("No valid commit SHA provided for push review - skipping review.")
         return
 
-    # Get commit diff via GitHub API
-    changed_files = github.get_commit_files(commit_sha)
+    print(f"Reviewing push commit {commit_sha[:8]} in {github.repo}")
+
+    # Get commit details via GitHub API
+    commit_data = github.get_commit(commit_sha)
+    if not commit_data:
+        print(f"Could not retrieve commit {commit_sha[:8]} details.")
+        return
+
+    # Check for merge commits (multiple parents)
+    parents = commit_data.get("parents", [])
+    if len(parents) > 1:
+        print(f"Commit {commit_sha[:8]} is a merge commit with {len(parents)} parents - skipping review.")
+        return
+
+    changed_files = commit_data.get("files", [])
     if not changed_files:
         print("No changed files found in this commit.")
         return
